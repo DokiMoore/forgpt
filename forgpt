@@ -1,0 +1,1401 @@
+#include "FastLED.h"
+#include "fonts.h"
+#include "GyverTimer.h"
+#include "ESP8266WiFi.h"
+#include "WiFiClient.h"
+#include "ESP8266WebServer.h"
+#include <string>
+// ************************ ВАЙФАЙ *************************
+#define APSSID "NameESP"
+#define APPSK "12345678"
+const char *ssid = APSSID;
+const char *password = APPSK;
+String ssid1;
+String password1;
+ESP8266WebServer server(80);
+// ************************ МАТРИЦА *************************
+#define LED_PIN 5           // пин ленты
+int BRIGHTNESS1 = 50 ;      
+#define BRIGHTNESS 50       // стандартная маскимальная яркость (0-255)
+#define CURRENT_LIMIT 0     // лимит по току в миллиамперах, автоматически управляет яркостью (пожалей свой блок питания!) 0 - выключить лимит
+#define WIDTH 16            // ширина матрицы
+#define HEIGHT 16           // высота матрицы
+#define MATRIX_TYPE 0       // тип матрицы: 0 - зигзаг, 1 - последовательная
+#define CONNECTION_ANGLE 0  // угол подключения: 0 - левый нижний, 1 - левый верхний, 2 - правый верхний, 3 - правый нижний
+#define STRIP_DIRECTION 0   // направление ленты из угла: 0 - вправо, 1 - вверх, 2 - влево, 3 - вниз
+// при неправильной настрйоке матрицы вы получите предупреждение "Wrong matrix parameters! Set to default"
+
+// ******************** ЭФФЕКТЫ И РЕЖИМЫ ********************
+#define D_TEXT_SPEED 100    // скорость бегущего текста по умолчанию (мс)
+#define D_EFFECT_SPEED 100  // скорость эффектов по умолчанию (мс)
+#define D_GIF_SPEED 80      // скорость гифок (мс)
+
+#define AUTOPLAY 1          // 0 выкл / 1 вкл автоматическую смену режимов
+#define AUTOPLAY_PERIOD 10  // время между авто сменой режимов (секунды)
+#define IDLE_TIME 10        // время бездействия кнопок (в секундах) после которого запускается автосмена режимов и демо в играх
+
+// ************** ОТКЛЮЧЕНИЕ КОМПОНЕНТОВ СИСТЕМЫ (для экономии памяти) *************
+#define USE_FONTS 1  // использовать буквы (бегущая строка) (0 нет, 1 да)
+
+// ******************************** ДЛЯ РАЗРАБОТЧИКОВ ********************************
+#define DEBUG 0
+#define NUM_LEDS WIDTH* HEIGHT
+
+
+CRGB leds[NUM_LEDS];
+String runningText = "";
+byte globalBrightness = BRIGHTNESS;
+byte globalSpeed = 200;
+uint32_t globalColor = 0x00ff00;  // цвет при запуске зелёный
+byte breathBrightness;
+boolean loadingFlag = true;
+byte frameNum;
+boolean idleState = false;  // флаг холостого режима работы
+
+int8_t thisMode = 0;
+boolean controlFlag = false;
+
+GTimer_ms autoplayTimer((long)AUTOPLAY_PERIOD * 1000);
+GTimer_ms effectTimer(D_EFFECT_SPEED);
+GTimer_ms scrollTimer(D_TEXT_SPEED);
+GTimer_ms idleTimer((long)IDLE_TIME * 1000);
+
+// шрифт 5х7
+const uint8_t font5x7[][5] PROGMEM = {
+  {0x3e, 0x51, 0x49, 0x45, 0x3e}, // 0 0x30 48
+  {0x00, 0x42, 0x7f, 0x40, 0x00}, // 1 0x31 49
+  {0x42, 0x61, 0x51, 0x49, 0x46}, // 2 0x32 50
+  {0x21, 0x41, 0x45, 0x4b, 0x31}, // 3 0x33 51
+  {0x18, 0x14, 0x12, 0x7f, 0x10}, // 4 0x34 52
+  {0x27, 0x45, 0x45, 0x45, 0x39}, // 5 0x35 53
+  {0x3c, 0x4a, 0x49, 0x49, 0x30}, // 6 0x36 54
+  {0x01, 0x71, 0x09, 0x05, 0x03}, // 7 0x37 55
+  {0x36, 0x49, 0x49, 0x49, 0x36}, // 8 0x38 56
+  {0x06, 0x49, 0x49, 0x29, 0x1e}, // 9 0x39 57
+};
+
+// шрифт 3х5 квадратный
+const uint8_t font3x5[][3] PROGMEM = {
+  {0b11111, 0b10001, 0b11111},    // 0
+  {0b00000, 0b00000, 0b11111},    // 1
+  {0b10111, 0b10101, 0b11101},    // 2
+  {0b10101, 0b10101, 0b11111},    // 3
+  {0b11100, 0b00100, 0b11111},    // 4
+  {0b11101, 0b10101, 0b10111},    // 5
+  {0b11111, 0b10101, 0b10111},    // 6
+  {0b10000, 0b10000, 0b11111},    // 7
+  {0b11111, 0b10101, 0b11111},    // 8
+  {0b11101, 0b10101, 0b11111},    // 9
+};
+
+// шрифт 3х5 скруглённый
+const uint8_t font3x5_s[][3] PROGMEM = {
+  {0b01111, 0b10001, 0b11110},    // 0
+  {0b00000, 0b01000, 0b11111},    // 1
+  {0b10011, 0b10101, 0b01001},    // 2
+  {0b10001, 0b10101, 0b11111},    // 3
+  {0b11100, 0b00100, 0b11111},    // 4
+  {0b11101, 0b10101, 0b10111},    // 5
+  {0b01111, 0b10101, 0b10111},    // 6
+  {0b10000, 0b10011, 0b11100},    // 7
+  {0b11111, 0b10101, 0b11111},    // 8
+  {0b11101, 0b10101, 0b11110},    // 9
+};
+
+// нарисовать цифру шрифт 3х5 квадратный
+void drawDigit3x5(byte digit, byte X, byte Y, uint32_t color) {
+  if (digit > 9) return;
+  for (byte x = 0; x < 3; x++) {
+    byte thisByte = pgm_read_byte(&(font3x5[digit][x]));
+    for (byte y = 0; y < 5; y++) {
+      if (x + X > WIDTH || y + Y > HEIGHT) continue;
+      if (thisByte & (1 << y)) drawPixelXY(x + X, y + Y, color);
+    }
+  }
+}
+
+// нарисовать цифру шрифт 3х5 скруглённый
+void drawDigit3x5_s(byte digit, byte X, byte Y, uint32_t color) {
+  if (digit > 9) return;
+  for (byte x = 0; x < 3; x++) {
+    byte thisByte = pgm_read_byte(&(font3x5_s[digit][x]));
+    for (byte y = 0; y < 5; y++) {
+      if (x + X > WIDTH || y + Y > HEIGHT) continue;
+      if (thisByte & (1 << y)) drawPixelXY(x + X, y + Y, color);
+    }
+  }
+}
+
+// нарисовать цифру шрифт 5х7
+void drawDigit5x7(byte digit, byte X, byte Y, uint32_t color) {
+  if (digit > 9) return;
+  for (byte x = 0; x < 5; x++) {
+    byte thisByte = pgm_read_byte(&(font5x7[digit][x]));
+    for (byte y = 0; y < 7; y++) {
+      if (x + X > WIDTH || y + Y > HEIGHT) continue;
+      if (thisByte & (1 << 6 - y)) drawPixelXY(x + X, y + Y, color);
+    }
+  }
+}
+
+// точки для часов
+void drawDots(byte X, byte Y, uint32_t color) {
+  drawPixelXY(X, Y + 1, color);
+  drawPixelXY(X, Y + 3, color);
+}
+
+// нарисовать часы
+void drawClock(byte hrs, byte mins, boolean dots, byte X, byte Y, uint32_t color1, uint32_t color2) {
+  if (hrs > 9) drawDigit3x5(hrs / 10, X, Y, color1);
+  drawDigit3x5(hrs % 10, X + 4, Y, color1);
+  if (dots) drawDots(X + 7, Y, color2);
+  else drawDots(X + 7, Y, 0x000000);
+  drawDigit3x5(mins / 10, X + 8, Y, color1);
+  drawDigit3x5(mins % 10, X + 12, Y, color1);
+}
+
+
+
+// *****************************************************************************работа с бегущим текстом
+
+// **************** НАСТРОЙКИ ****************
+#define TEXT_DIRECTION 1  // 1 - по горизонтали, 0 - по вертикали
+#define MIRR_V 0          // отразить текст по вертикали (0 / 1)
+#define MIRR_H 0          // отразить текст по горизонтали (0 / 1)
+
+#define TEXT_HEIGHT 0     // высота, на которой бежит текст (от низа матрицы)
+#define LET_WIDTH 5       // ширина буквы шрифта
+#define LET_HEIGHT 8      // высота буквы шрифта
+#define SPACE 1           // пробел
+
+// --------------------- ДЛЯ РАЗРАБОТЧИКОВ ----------------------
+
+#if (USE_FONTS == 1)
+
+int offset = WIDTH;
+
+void fillString(String text, uint32_t color) {
+  if (loadingFlag) {
+    offset = WIDTH;   // перемотка в правый край
+    loadingFlag = false;
+  }
+  if (scrollTimer.isReady()) {
+    FastLED.clear();
+    byte i = 0, j = 0;
+    while (text[i] != '\0') {
+      if ((byte)text[i] > 191) {    // работаем с русскими буквами!
+        i++;
+      } else {
+        drawLetter(j, text[i], offset + j * (LET_WIDTH + SPACE), color);
+        i++;
+        j++;
+      }
+    }
+
+    offset--;
+    if (offset < -j * (LET_WIDTH + SPACE)) {    // строка убежала
+      offset = WIDTH;
+    }
+    FastLED.show();
+  }
+}
+
+void drawLetter(uint8_t index, uint8_t letter, int16_t offset, uint32_t color) {
+  int8_t start_pos = 0, finish_pos = LET_WIDTH;
+  CRGB letterColor;
+  if (color == 1) letterColor = CHSV(byte(offset * 10), 255, 255);
+  else if (color == 2) letterColor = CHSV(byte(index * 30), 255, 255);
+  else letterColor = color;
+
+  if (offset < -LET_WIDTH || offset > WIDTH) return;
+  if (offset < 0) start_pos = -offset;
+  if (offset > (WIDTH - LET_WIDTH)) finish_pos = WIDTH - offset;
+
+  for (byte i = start_pos; i < finish_pos; i++) {
+    int thisByte;
+    if (MIRR_V) thisByte = getFont((byte)letter, LET_WIDTH - 1 - i);
+    else thisByte = getFont((byte)letter, i);
+
+    for (byte j = 0; j < LET_HEIGHT; j++) {
+      boolean thisBit;
+
+      if (MIRR_H) thisBit = thisByte & (1 << j);
+      else thisBit = thisByte & (1 << (LET_HEIGHT - 1 - j));
+
+      // рисуем столбец (i - горизонтальная позиция, j - вертикальная)
+      if (TEXT_DIRECTION) {
+        if (thisBit) leds[getPixelNumber(offset + i, TEXT_HEIGHT + j)] = letterColor;
+        else drawPixelXY(offset + i, TEXT_HEIGHT + j, 0x000000);
+      } else {
+        if (thisBit) leds[getPixelNumber(i, offset + TEXT_HEIGHT + j)] = letterColor;
+        else drawPixelXY(i, offset + TEXT_HEIGHT + j, 0x000000);
+      }
+
+    }
+  }
+}
+
+// ------------- СЛУЖЕБНЫЕ ФУНКЦИИ --------------
+
+// интерпретатор кода символа в массиве fontHEX (для Arduino IDE 1.8.* и выше)
+uint8_t getFont(uint8_t font, uint8_t row) {
+  font = font - '0' + 16;   // перевод код символа из таблицы ASCII в номер согласно нумерации массива
+  if (font <= 90) return pgm_read_byte(&(fontHEX[font][row]));     // для английских букв и символов
+  else if (font >= 112 && font <= 159) {    // и пизд*ц ждя русских
+    return pgm_read_byte(&(fontHEX[font - 17][row]));
+  } else if (font >= 96 && font <= 111) {
+    return pgm_read_byte(&(fontHEX[font + 47][row]));
+  }
+return 0;
+}
+
+#elif (USE_FONTS == 0)
+void fillString(String text, uint32_t color) {
+  return;
+}
+#endif
+
+
+
+// ***************************************************************************************************************эффекты
+
+// **************** НАСТРОЙКИ ЭФФЕКТОВ ****************
+// эффект "синусоиды"
+#define WAVES_AMOUNT 2    // количество синусоид
+
+// эффект "шарики"
+#define BALLS_AMOUNT 3    // количество "шариков"
+#define CLEAR_PATH 1      // очищать путь
+#define BALL_TRACK 1      // (0 / 1) - вкл/выкл следы шариков
+#define DRAW_WALLS 1      // режим с рисованием препятствий для шаров
+#define TRACK_STEP 40     // длина хвоста шарика (чем больше цифра, тем хвост короче)
+
+// эффект "квадратик"
+#define BALL_SIZE 3       // размер шара
+#define RANDOM_COLOR 1    // случайный цвет при отскоке
+
+// эффект "огонь"
+#define SPARKLES 1        // вылетающие угольки вкл выкл
+#define HUE_ADD 0         // добавка цвета в огонь (от 0 до 230) - меняет весь цвет пламени
+
+// эффект "кометы"
+#define TAIL_STEP 30      // длина хвоста кометы
+#define SATURATION 150    // насыщенность кометы (от 0 до 255)
+
+// эффект конфетти
+#define DENSE 3           // плотность конфетти
+
+// --------------------- ДЛЯ РАЗРАБОТЧИКОВ ----------------------
+
+// *********** "дыхание" яркостью ***********
+boolean brightnessDirection;
+void brightnessRoutine() {
+  if (effectTimer.isReady()) {
+    if (brightnessDirection) {
+      breathBrightness += 2;
+      if (breathBrightness > globalBrightness - 1) {
+        brightnessDirection = false;
+      }
+    } else {
+      breathBrightness -= 2;
+      if (breathBrightness < 1) {
+        brightnessDirection = true;
+      }
+    }
+    FastLED.setBrightness(breathBrightness);
+  }
+}
+
+// *********** смена цвета активных светодиодов (рисунка) ***********
+byte hue;
+void colorsRoutine() {
+  if (effectTimer.isReady()) {
+    hue += 4;
+    for (int i = 0; i < NUM_LEDS; i++) {
+      if (getPixColor(i) > 0) leds[i] = CHSV(hue, 255, 255);
+    }
+  }
+}
+
+// *********** снегопад ***********
+void snowRoutine() {
+  if (effectTimer.isReady()) {
+    // сдвигаем всё вниз
+    for (byte x = 0; x < WIDTH; x++) {
+      for (byte y = 0; y < HEIGHT - 1; y++) {
+        drawPixelXY(x, y, getPixColorXY(x, y + 1));
+      }
+    }
+
+    for (byte x = 0; x < WIDTH; x++) {
+      // заполняем случайно верхнюю строку
+      // а также не даём двум блокам по вертикали вместе быть
+      if (getPixColorXY(x, HEIGHT - 2) == 0 && (random(0, 10) == 0))
+        drawPixelXY(x, HEIGHT - 1, 0xE0FFFF - 0x101010 * random(0, 4));
+      else
+        drawPixelXY(x, HEIGHT - 1, 0x000000);
+    }
+  }
+}
+
+// ***************************** БЛУДНЫЙ КУБИК *****************************
+int coordB[2];
+int8_t vectorB[2];
+CRGB ballColor;
+
+void ballRoutine() {
+    Serial.print("vizov ball bil"); 
+  if (effectTimer.isReady()) {
+    if (loadingFlag) {
+      for (byte i = 0; i < 2; i++) {
+        coordB[i] = WIDTH / 2 * 10;
+        vectorB[i] = random(8, 20);
+        ballColor = CHSV(random(0, 9) * 28, 255, 255);
+      }
+      loadingFlag = false;
+    }
+    for (byte i = 0; i < 2; i++) {
+      coordB[i] += vectorB[i];
+      if (coordB[i] < 0) {
+        coordB[i] = 0;
+        vectorB[i] = -vectorB[i];
+        if (RANDOM_COLOR) ballColor = CHSV(random(0, 9) * 28, 255, 255);
+        //vectorB[i] += random(0, 6) - 3;
+      }
+    }
+    if (coordB[0] > (WIDTH - BALL_SIZE) * 10) {
+      coordB[0] = (WIDTH - BALL_SIZE) * 10;
+      vectorB[0] = -vectorB[0];
+      if (RANDOM_COLOR) ballColor = CHSV(random(0, 9) * 28, 255, 255);
+      //vectorB[0] += random(0, 6) - 3;
+    }
+    if (coordB[1] > (HEIGHT - BALL_SIZE) * 10) {
+      coordB[1] = (HEIGHT - BALL_SIZE) * 10;
+      vectorB[1] = -vectorB[1];
+      if (RANDOM_COLOR) ballColor = CHSV(random(0, 9) * 28, 255, 255);
+      //vectorB[1] += random(0, 6) - 3;
+    }
+    FastLED.clear();
+    for (byte i = 0; i < BALL_SIZE; i++)
+      for (byte j = 0; j < BALL_SIZE; j++)
+        leds[getPixelNumber(coordB[0] / 10 + i, coordB[1] / 10 + j)] = ballColor;
+  }
+}
+
+// *********** радуга заливка ***********
+void rainbowRoutine() {
+  if (effectTimer.isReady()) {
+    hue += 3;
+    for (byte i = 0; i < WIDTH; i++) {
+      CHSV thisColor = CHSV((byte)(hue + i * float(255 / WIDTH)), 255, 255);
+      for (byte j = 0; j < HEIGHT; j++)
+        leds[getPixelNumber(i, j)] = thisColor;
+    }
+  }
+}
+
+// *********** радуга активных светодиодов (рисунка) ***********
+void rainbowColorsRoutine() {
+  if (effectTimer.isReady()) {
+    hue++;
+    for (byte i = 0; i < WIDTH; i++) {
+      CHSV thisColor = CHSV((byte)(hue + i * float(255 / WIDTH)), 255, 255);
+      for (byte j = 0; j < HEIGHT; j++)
+        if (getPixColor(getPixelNumber(i, j)) > 0) leds[getPixelNumber(i, j)] = thisColor;
+    }
+  }
+}
+
+// ********************** огонь **********************
+unsigned char matrixValue[8][16];
+unsigned char line[WIDTH];
+int pcnt = 0;
+
+//these values are substracetd from the generated values to give a shape to the animation
+const unsigned char valueMask[8][16] PROGMEM = {
+  {32 , 0  , 0  , 0  , 0  , 0  , 0  , 32 , 32 , 0  , 0  , 0  , 0  , 0  , 0  , 32 },
+  {64 , 0  , 0  , 0  , 0  , 0  , 0  , 64 , 64 , 0  , 0  , 0  , 0  , 0  , 0  , 64 },
+  {96 , 32 , 0  , 0  , 0  , 0  , 32 , 96 , 96 , 32 , 0  , 0  , 0  , 0  , 32 , 96 },
+  {128, 64 , 32 , 0  , 0  , 32 , 64 , 128, 128, 64 , 32 , 0  , 0  , 32 , 64 , 128},
+  {160, 96 , 64 , 32 , 32 , 64 , 96 , 160, 160, 96 , 64 , 32 , 32 , 64 , 96 , 160},
+  {192, 128, 96 , 64 , 64 , 96 , 128, 192, 192, 128, 96 , 64 , 64 , 96 , 128, 192},
+  {255, 160, 128, 96 , 96 , 128, 160, 255, 255, 160, 128, 96 , 96 , 128, 160, 255},
+  {255, 192, 160, 128, 128, 160, 192, 255, 255, 192, 160, 128, 128, 160, 192, 255}
+};
+
+//these are the hues for the fire,
+//should be between 0 (red) to about 25 (yellow)
+const unsigned char hueMask[8][16] PROGMEM = {
+  {1 , 11, 19, 25, 25, 22, 11, 1 , 1 , 11, 19, 25, 25, 22, 11, 1 },
+  {1 , 8 , 13, 19, 25, 19, 8 , 1 , 1 , 8 , 13, 19, 25, 19, 8 , 1 },
+  {1 , 8 , 13, 16, 19, 16, 8 , 1 , 1 , 8 , 13, 16, 19, 16, 8 , 1 },
+  {1 , 5 , 11, 13, 13, 13, 5 , 1 , 1 , 5 , 11, 13, 13, 13, 5 , 1 },
+  {1 , 5 , 11, 11, 11, 11, 5 , 1 , 1 , 5 , 11, 11, 11, 11, 5 , 1 },
+  {0 , 1 , 5 , 8 , 8 , 5 , 1 , 0 , 0 , 1 , 5 , 8 , 8 , 5 , 1 , 0 },
+  {0 , 0 , 1 , 5 , 5 , 1 , 0 , 0 , 0 , 0 , 1 , 5 , 5 , 1 , 0 , 0 },
+  {0 , 0 , 0 , 1 , 1 , 0 , 0 , 0 , 0 , 0 , 0 , 1 , 1 , 0 , 0 , 0 }
+};
+
+void fireRoutine() {
+  if (loadingFlag) {
+    loadingFlag = false;
+    FastLED.clear();
+    generateLine();
+    memset(matrixValue, 0, sizeof(matrixValue));
+  }
+  if (effectTimer.isReady()) {
+    if (pcnt >= 100) {
+      shiftUp();
+      generateLine();
+      pcnt = 0;
+    }
+    drawFrame(pcnt);
+    pcnt += 30;
+  }
+}
+
+// Randomly generate the next line (matrix row)
+
+void generateLine() {
+  for (uint8_t x = 0; x < WIDTH; x++) {
+    line[x] = random(64, 255);
+  }
+}
+
+//shift all values in the matrix up one row
+
+void shiftUp() {
+  for (uint8_t y = HEIGHT - 1; y > 0; y--) {
+    for (uint8_t x = 0; x < WIDTH; x++) {
+      uint8_t newX = x;
+      if (x > 15) newX = x - 15;
+      if (y > 7) continue;
+      matrixValue[y][newX] = matrixValue[y - 1][newX];
+    }
+  }
+
+  for (uint8_t x = 0; x < WIDTH; x++) {
+    uint8_t newX = x;
+    if (x > 15) newX = x - 15;
+    matrixValue[0][newX] = line[newX];
+  }
+}
+
+// draw a frame, interpolating between 2 "key frames"
+// @param pcnt percentage of interpolation
+
+void drawFrame(int pcnt) {
+  int nextv;
+
+  //each row interpolates with the one before it
+  for (unsigned char y = HEIGHT - 1; y > 0; y--) {
+    for (unsigned char x = 0; x < WIDTH; x++) {
+      uint8_t newX = x;
+      if (x > 15) newX = x - 15;
+      if (y < 8) {
+        nextv =
+          (((100.0 - pcnt) * matrixValue[y][newX]
+            + pcnt * matrixValue[y - 1][newX]) / 100.0)
+          - pgm_read_byte(&(valueMask[y][newX]));
+
+        CRGB color = CHSV(
+                       HUE_ADD + pgm_read_byte(&(hueMask[y][newX])), // H
+                       255, // S
+                       (uint8_t)max(0, nextv) // V
+                     );
+
+        leds[getPixelNumber(x, y)] = color;
+      } else if (y == 8 && SPARKLES) {
+        if (random(0, 20) == 0 && getPixColorXY(x, y - 1) != 0) drawPixelXY(x, y, getPixColorXY(x, y - 1));
+        else drawPixelXY(x, y, 0);
+      } else if (SPARKLES) {
+
+        // старая версия для яркости
+        if (getPixColorXY(x, y - 1) > 0)
+          drawPixelXY(x, y, getPixColorXY(x, y - 1));
+        else drawPixelXY(x, y, 0);
+
+      }
+    }
+  }
+
+  //first row interpolates with the "next" line
+  for (unsigned char x = 0; x < WIDTH; x++) {
+    uint8_t newX = x;
+    if (x > 15) newX = x - 15;
+    CRGB color = CHSV(
+                   HUE_ADD + pgm_read_byte(&(hueMask[0][newX])), // H
+                   255,           // S
+                   (uint8_t)(((100.0 - pcnt) * matrixValue[0][newX] + pcnt * line[newX]) / 100.0) // V
+                 );
+    leds[getPixelNumber(newX, 0)] = color;
+  }
+}
+
+// **************** МАТРИЦА *****************
+void matrixRoutine() {
+  if (loadingFlag) {
+    loadingFlag = false;
+    FastLED.clear();
+  }
+  if (effectTimer.isReady()) {
+    for (byte x = 0; x < WIDTH; x++) {
+      // заполняем случайно верхнюю строку
+      uint32_t thisColor = getPixColorXY(x, HEIGHT - 1);
+      if (thisColor == 0)
+        drawPixelXY(x, HEIGHT - 1, 0x00FF00 * (random(0, 10) == 0));
+      else if (thisColor < 0x002000)
+        drawPixelXY(x, HEIGHT - 1, 0);
+      else
+        drawPixelXY(x, HEIGHT - 1, thisColor - 0x002000);
+    }
+
+    // сдвигаем всё вниз
+    for (byte x = 0; x < WIDTH; x++) {
+      for (byte y = 0; y < HEIGHT - 1; y++) {
+        drawPixelXY(x, y, getPixColorXY(x, y + 1));
+      }
+    }
+  }
+}
+
+// ********************************* ШАРИКИ *********************************
+int coord[BALLS_AMOUNT][2];
+int8_t vector[BALLS_AMOUNT][2];
+CRGB ballColors[BALLS_AMOUNT];
+
+void ballsRoutine() {
+  Serial.print("vizov balls bil"); 
+  if (loadingFlag) {
+    loadingFlag = false;
+    for (byte j = 0; j < BALLS_AMOUNT; j++) {
+      int sign;
+
+      // забиваем случайными данными
+      coord[j][0] = WIDTH / 2 * 10;
+      random(0, 2) ? sign = 1 : sign = -1;
+      vector[j][0] = random(4, 15) * sign;
+      coord[j][1] = HEIGHT / 2 * 10;
+      random(0, 2) ? sign = 1 : sign = -1;
+      vector[j][1] = random(4, 15) * sign;
+      ballColors[j] = CHSV(random(0, 9) * 28, 255, 255);
+    }
+  }
+  if (effectTimer.isReady()) {
+
+    if (!BALL_TRACK)    // если режим БЕЗ следов шариков
+      FastLED.clear();  // очистить
+    else {              // режим со следами
+      fader();
+    }
+
+    // движение шариков
+    for (byte j = 0; j < BALLS_AMOUNT; j++) {
+
+      // движение шариков
+      for (byte i = 0; i < 2; i++) {
+        coord[j][i] += vector[j][i];
+        if (coord[j][i] < 0) {
+          coord[j][i] = 0;
+          vector[j][i] = -vector[j][i];
+        }
+      }
+
+      if (coord[j][0] > (WIDTH - 1) * 10) {
+        coord[j][0] = (WIDTH - 1) * 10;
+        vector[j][0] = -vector[j][0];
+      }
+      if (coord[j][1] > (HEIGHT - 1) * 10) {
+        coord[j][1] = (HEIGHT - 1) * 10;
+        vector[j][1] = -vector[j][1];
+      }
+      leds[getPixelNumber(coord[j][0] / 10, coord[j][1] / 10)] =  ballColors[j];
+    }
+  }
+}
+
+// ******************************** СИНУСОИДЫ *******************************
+
+int t;
+byte w[WAVES_AMOUNT];
+byte phi[WAVES_AMOUNT];
+byte A[WAVES_AMOUNT];
+CRGB waveColors[WAVES_AMOUNT];
+
+void wavesRoutine() {
+  if (loadingFlag) {
+    loadingFlag = false;
+    for (byte j = 0; j < WAVES_AMOUNT; j++) {
+      // забиваем случайными данными
+      w[j] = random(17, 25);
+      phi[j] = random(0, 360);
+      A[j] = HEIGHT / 2 * random(4, 11) / 10;
+      waveColors[j] = CHSV(random(0, 9) * 28, 255, 255);
+    }
+  }
+  if (effectTimer.isReady()) {
+
+    // сдвигаем все пиксели вправо
+    for (int i = WIDTH - 1; i > 0; i--)
+      for (int j = 0; j < HEIGHT; j++)
+        drawPixelXY(i, j, getPixColorXY(i - 1, j));
+
+    // увеличиваем "угол"
+    t++;
+    if (t > 360) t = 0;
+
+    // заливаем чёрным левую линию
+    for (byte i = 0; i < HEIGHT; i++) {
+      drawPixelXY(0, i, 0x000000);
+    }
+
+    // генерируем позицию точки через синус
+    for (byte j = 0; j < WAVES_AMOUNT; j++) {
+      float value = HEIGHT / 2 + (float)A[j] * sin((float)w[j] * t * DEG_TO_RAD + (float)phi[j] * DEG_TO_RAD);
+      leds[getPixelNumber(0, (byte)value)] = waveColors[j];
+    }
+  }
+}
+
+// функция плавного угасания цвета для всех пикселей
+void fader() {
+  for (byte i = 0; i < WIDTH; i++) {
+    for (byte j = 0; j < HEIGHT; j++) {
+      fadePixel(i, j, TRACK_STEP);
+    }
+  }
+}
+
+void fadePixel(byte i, byte j, byte step) {
+  // измеряяем цвет текущего пикселя
+  uint32_t thisColor = getPixColorXY(i, j);
+
+  // если 0, то пропускаем действия и переходим к следующему
+  if (thisColor == 0) return;
+
+  // разбиваем цвет на составляющие RGB
+  byte rgb[3];
+  rgb[0] = (thisColor >> 16) & 0xff;
+  rgb[1] = (thisColor >> 8) & 0xff;
+  rgb[2] = thisColor & 0xff;
+
+  // ищем максимум
+  byte maximum = max(max(rgb[0], rgb[1]), rgb[2]);
+  float coef = 0;
+
+  // если есть возможность уменьшить
+  if (maximum >= step)
+    // уменьшаем и находим коэффициент уменьшения
+    coef = (float)(maximum - step) / maximum;
+
+  // далее все цвета умножаем на этот коэффициент
+  for (byte i = 0; i < 3; i++) {
+    if (rgb[i] > 0) rgb[i] = (float)rgb[i] * coef;
+    else rgb[i] = 0;
+  }
+  leds[getPixelNumber(i, j)] = CRGB(rgb[0], rgb[1], rgb[2]);
+}
+
+// ********************* ЗВЕЗДОПАД ******************
+void starfallRoutine() {
+  if (effectTimer.isReady()) {
+    // заполняем головами комет левую и верхнюю линию
+    for (byte i = HEIGHT / 2; i < HEIGHT; i++) {
+      if (getPixColorXY(0, i) == 0
+          && (random(0, 60) == 0)
+          && getPixColorXY(0, i + 1) == 0
+          && getPixColorXY(0, i - 1) == 0)
+        leds[getPixelNumber(0, i)] = CHSV(random(0, 200), SATURATION, 255);
+    }
+    for (byte i = 0; i < WIDTH / 2; i++) {
+      if (getPixColorXY(i, HEIGHT - 1) == 0
+          && (random(0, 60) == 0)
+          && getPixColorXY(i + 1, HEIGHT - 1) == 0
+          && getPixColorXY(i - 1, HEIGHT - 1) == 0)
+        leds[getPixelNumber(i, HEIGHT - 1)] = CHSV(random(0, 200), SATURATION, 255);
+    }
+
+    // сдвигаем по диагонали
+    for (byte y = 0; y < HEIGHT - 1; y++) {
+      for (byte x = WIDTH - 1; x > 0; x--) {
+        drawPixelXY(x, y, getPixColorXY(x - 1, y + 1));
+      }
+    }
+
+    // уменьшаем яркость левой и верхней линии, формируем "хвосты"
+    for (byte i = HEIGHT / 2; i < HEIGHT; i++) {
+      fadePixel(0, i, TRACK_STEP);
+    }
+    for (byte i = 0; i < WIDTH / 2; i++) {
+      fadePixel(i, HEIGHT - 1, TAIL_STEP);
+    }
+  }
+}
+
+// ********************************************************************случайно гаснущие вспышки********************************************************************
+/*const byte DENSE_MIN = 5;
+const byte DENSE_MAX = 30;
+byte dense = 20; // начальное значение плотности
+
+const byte BRIGHT_MIN = 50;
+const byte BRIGHT_MAX = 255;
+byte brightness = 255; // начальное значение яркости
+
+const uint16_t TIMER_MIN = 500;
+const uint16_t TIMER_MAX = 5000;
+uint16_t timer = 2000; // начальное значение таймера
+
+const byte MY_SIZE_MIN = 1;
+const byte MY_SIZE_MAX = 10;
+byte size = 3; // начальное значение размера искр
+*/
+void sparklesRoutine() {
+  if (effectTimer.isReady()) {
+    for (byte i = 0; i < DENSE; i++) {
+      byte x = random(0, WIDTH);
+      byte y = random(0, HEIGHT);
+      if (getPixColorXY(x, y) == 0)
+        leds[getPixelNumber(x, y)] = CHSV(random(0, 255), 255, 255);
+    }
+    fader();
+  }
+}
+/*
+void setDense(byte value) {
+  dense = constrain(value, DENSE_MIN, DENSE_MAX);
+}
+
+void setBrightness(byte value) {
+  brightness = constrain(value, BRIGHT_MIN, BRIGHT_MAX);
+}
+
+void setTimer(uint16_t value) {
+  timer = constrain(value, TIMER_MIN, TIMER_MAX);
+}
+
+void setSize(byte value) {
+  size = constrain(value, MY_SIZE_MIN, MY_SIZE_MAX);
+}
+
+void fader1() {
+  for (byte y = 0; y < HEIGHT; y++) {
+    for (byte x = 0; x < WIDTH; x++) {
+      byte index = getPixelNumber(x, y);
+      CHSV hsv = rgb2hsv_approximate(leds[index]);
+      if (hsv.value > 8) {
+        hsv.value -= 8;
+        leds[index] = hsv;
+      } else {
+        leds[index] = CRGB::Black;
+      }
+    }
+  }
+}*/
+// **************** НАСТРОЙКА МАТРИЦЫ ****************
+#if (CONNECTION_ANGLE == 0 && STRIP_DIRECTION == 0)
+#define _WIDTH WIDTH
+#define THIS_X x
+#define THIS_Y y
+
+#elif (CONNECTION_ANGLE == 0 && STRIP_DIRECTION == 1)
+#define _WIDTH HEIGHT
+#define THIS_X y
+#define THIS_Y x
+
+#elif (CONNECTION_ANGLE == 1 && STRIP_DIRECTION == 0)
+#define _WIDTH WIDTH
+#define THIS_X x
+#define THIS_Y (HEIGHT - y - 1)
+
+#elif (CONNECTION_ANGLE == 1 && STRIP_DIRECTION == 3)
+#define _WIDTH HEIGHT
+#define THIS_X (HEIGHT - y - 1)
+#define THIS_Y x
+
+#elif (CONNECTION_ANGLE == 2 && STRIP_DIRECTION == 2)
+#define _WIDTH WIDTH
+#define THIS_X (WIDTH - x - 1)
+#define THIS_Y (HEIGHT - y - 1)
+
+#elif (CONNECTION_ANGLE == 2 && STRIP_DIRECTION == 3)
+#define _WIDTH HEIGHT
+#define THIS_X (HEIGHT - y - 1)
+#define THIS_Y (WIDTH - x - 1)
+
+#elif (CONNECTION_ANGLE == 3 && STRIP_DIRECTION == 2)
+#define _WIDTH WIDTH
+#define THIS_X (WIDTH - x - 1)
+#define THIS_Y y
+
+#elif (CONNECTION_ANGLE == 3 && STRIP_DIRECTION == 1)
+#define _WIDTH HEIGHT
+#define THIS_X y
+#define THIS_Y (WIDTH - x - 1)
+
+#else
+#define _WIDTH WIDTH
+#define THIS_X x
+#define THIS_Y y
+#pragma message "Wrong matrix parameters! Set to default"
+
+#endif
+
+
+// получить номер пикселя в ленте по координатам
+uint16_t getPixelNumber(byte x, byte y) {
+  if ((THIS_Y % 2 == 0) || MATRIX_TYPE) {  // если чётная строка
+    return (THIS_Y * _WIDTH + THIS_X);
+  } else {  // если нечётная строка
+    return (THIS_Y * _WIDTH + _WIDTH - THIS_X - 1);
+  }
+}
+
+// функция отрисовки точки по координатам X Y
+void drawPixelXY(int8_t x, int8_t y, uint32_t color) {
+  if (x < 0 || x > WIDTH - 1 || y < 0 || y > HEIGHT - 1) return;
+  leds[getPixelNumber(x, y)] = color;
+}
+
+// функция получения цвета пикселя по его номеру
+uint32_t getPixColor(int thisPixel) {
+  return (((uint32_t)leds[thisPixel].r << 16) | ((long)leds[thisPixel].g << 8) | (long)leds[thisPixel].b);
+}
+
+// функция получения цвета пикселя в матрице по его координатам
+uint32_t getPixColorXY(byte x, byte y) {
+  //if (x < 0 || x > WIDTH - 1 || y < 0 || y > HEIGHT - 1) return;
+  return getPixColor(getPixelNumber(x, y));
+}
+
+
+
+
+// Gamma коррекция (Defalt Gamma = 2.8)
+const uint8_t PROGMEM gammaR[] = {
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1,
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2,
+  2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 5,
+  5, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7, 8, 8, 8, 9,
+  9, 9, 10, 10, 10, 11, 11, 11, 12, 12, 12, 13, 13, 14, 14, 14,
+  15, 15, 16, 16, 17, 17, 18, 18, 19, 19, 20, 20, 21, 21, 22, 22,
+  23, 24, 24, 25, 25, 26, 27, 27, 28, 29, 29, 30, 31, 31, 32, 33,
+  33, 34, 35, 36, 36, 37, 38, 39, 40, 40, 41, 42, 43, 44, 45, 46,
+  46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61,
+  62, 63, 65, 66, 67, 68, 69, 70, 71, 73, 74, 75, 76, 78, 79, 80,
+  81, 83, 84, 85, 87, 88, 89, 91, 92, 94, 95, 97, 98, 99, 101, 102,
+  104, 105, 107, 109, 110, 112, 113, 115, 116, 118, 120, 121, 123, 125, 127, 128,
+  130, 132, 134, 135, 137, 139, 141, 143, 145, 146, 148, 150, 152, 154, 156, 158,
+  160, 162, 164, 166, 168, 170, 172, 174, 177, 179, 181, 183, 185, 187, 190, 192,
+  194, 196, 199, 201, 203, 206, 208, 210, 213, 215, 218, 220, 223, 225, 227, 230
+};
+
+const uint8_t PROGMEM gammaG[] = {
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1,
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2,
+  2, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 5, 5, 5,
+  5, 6, 6, 6, 6, 7, 7, 7, 7, 8, 8, 8, 9, 9, 9, 10,
+  10, 10, 11, 11, 11, 12, 12, 13, 13, 13, 14, 14, 15, 15, 16, 16,
+  17, 17, 18, 18, 19, 19, 20, 20, 21, 21, 22, 22, 23, 24, 24, 25,
+  25, 26, 27, 27, 28, 29, 29, 30, 31, 32, 32, 33, 34, 35, 35, 36,
+  37, 38, 39, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 50,
+  51, 52, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 66, 67, 68,
+  69, 70, 72, 73, 74, 75, 77, 78, 79, 81, 82, 83, 85, 86, 87, 89,
+  90, 92, 93, 95, 96, 98, 99, 101, 102, 104, 105, 107, 109, 110, 112, 114,
+  115, 117, 119, 120, 122, 124, 126, 127, 129, 131, 133, 135, 137, 138, 140, 142,
+  144, 146, 148, 150, 152, 154, 156, 158, 160, 162, 164, 167, 169, 171, 173, 175,
+  177, 180, 182, 184, 186, 189, 191, 193, 196, 198, 200, 203, 205, 208, 210, 213,
+  215, 218, 220, 223, 225, 228, 231, 233, 236, 239, 241, 244, 247, 249, 252, 255
+};
+
+const uint8_t PROGMEM gammaB[] = {
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2,
+  2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4,
+  4, 4, 5, 5, 5, 5, 5, 6, 6, 6, 6, 6, 7, 7, 7, 8,
+  8, 8, 8, 9, 9, 9, 10, 10, 10, 10, 11, 11, 12, 12, 12, 13,
+  13, 13, 14, 14, 15, 15, 15, 16, 16, 17, 17, 18, 18, 19, 19, 19,
+  20, 20, 21, 22, 22, 23, 23, 24, 24, 25, 25, 26, 27, 27, 28, 28,
+  29, 30, 30, 31, 32, 32, 33, 34, 34, 35, 36, 37, 37, 38, 39, 40,
+  40, 41, 42, 43, 44, 44, 45, 46, 47, 48, 49, 50, 51, 51, 52, 53,
+  54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 69, 70,
+  71, 72, 73, 74, 75, 77, 78, 79, 80, 81, 83, 84, 85, 86, 88, 89,
+  90, 92, 93, 94, 96, 97, 98, 100, 101, 103, 104, 106, 107, 109, 110, 112,
+  113, 115, 116, 118, 119, 121, 122, 124, 126, 127, 129, 131, 132, 134, 136, 137,
+  139, 141, 143, 144, 146, 148, 150, 152, 153, 155, 157, 159, 161, 163, 165, 167,
+  169, 171, 173, 175, 177, 179, 181, 183, 185, 187, 189, 191, 193, 196, 198, 200
+};
+
+// гамма-коррекция (более натуральные цвета)
+uint32_t gammaCorrection(uint32_t color) {
+  byte r = (color >> 16) & 0xFF;  // Extract the RR byte
+  byte g = (color >> 8) & 0xFF;   // Extract the GG byte
+  byte b = color & 0xFF;          // Extract the BB byte
+
+  r = pgm_read_byte(&gammaR[r]);
+  g = pgm_read_byte(&gammaG[g]);
+  b = pgm_read_byte(&gammaB[b]);
+
+  uint32_t newColor = ((long)(r & 0xff) << 16) + ((long)(g & 0xff) << 8) + ((long)b & 0xff);
+  return newColor;
+}
+
+// gamma correction для expandColor
+static const uint8_t PROGMEM
+  gamma5[] = {
+    0x00, 0x01, 0x02, 0x03, 0x05, 0x07, 0x09, 0x0b,
+    0x0e, 0x11, 0x14, 0x18, 0x1d, 0x22, 0x28, 0x2e,
+    0x36, 0x3d, 0x46, 0x4f, 0x59, 0x64, 0x6f, 0x7c,
+    0x89, 0x97, 0xa6, 0xb6, 0xc7, 0xd9, 0xeb, 0xff
+  },
+  gamma6[] = { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x08, 0x09, 0x0a, 0x0b, 0x0d, 0x0e, 0x10, 0x12, 0x13, 0x15, 0x17, 0x19, 0x1b, 0x1d, 0x20, 0x22, 0x25, 0x27, 0x2a, 0x2d, 0x30, 0x33, 0x37, 0x3a, 0x3e, 0x41, 0x45, 0x49, 0x4d, 0x52, 0x56, 0x5b, 0x5f, 0x64, 0x69, 0x6e, 0x74, 0x79, 0x7f, 0x85, 0x8b, 0x91, 0x97, 0x9d, 0xa4, 0xab, 0xb2, 0xb9, 0xc0, 0xc7, 0xcf, 0xd6, 0xde, 0xe6, 0xee, 0xf7, 0xff };
+
+// преобразовать цвет из 16 битного в 24 битный
+static uint32_t expandColor(uint16_t color) {
+  return ((uint32_t)pgm_read_byte(&gamma5[color >> 11]) << 16) | ((uint32_t)pgm_read_byte(&gamma6[(color >> 5) & 0x3F]) << 8) | pgm_read_byte(&gamma5[color & 0x1F]);
+}
+// залить все
+void fillAll(uint32_t color) {
+  for (int i = 0; i < NUM_LEDS; i++) {
+    leds[i] = color;
+  }
+}
+// ****************************** переключение на подкл к вайфаю ****************
+void connectwifi(){
+    // Получить данные из POST-запроса
+  Serial.println("zapystilsa conect wifi");
+  ssid1 = server.arg("ssid1");
+  password1 = server.arg("password1");
+  WiFi.softAPdisconnect();
+  Serial.println(ssid1);
+  Serial.println(password1);
+  delay(1000);
+  WiFi.begin(ssid1, password1);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(100);
+    fillString("Подключение к WiFi...",1);
+  }
+  unsigned long startTime = 10;
+  String localIPString = WiFi.localIP().toString();
+  for (int i = 0; i < 195; i++) {
+    fillString(localIPString + "/",CRGB::White);
+    delay(100);
+  }
+  FastLED.clear();
+  FastLED.show();
+}
+
+void handleConnect(){
+    String html = 
+    "<html><body><h1>Введите данные сети Wi-Fi</h1>"
+    "<form action='connectwifi' method='post'>"
+    "<label for='ssid'>SSID:</label>"
+    "<input type='text' name='ssid1' id='ssid1'><br>"
+    "<label for='password'>Password:</label>"
+    "<input type='text' name='password1' id='password1'><br>"
+    "<input type='submit' value='Submit'>"
+    "</form></body></html>";
+  server.sendHeader("Content-Type", "text/html; charset=UTF-8");
+  server.send(200, "text/html", html);
+}
+// ******************************************************************************
+// *********************************рисовать на матрице**************************
+
+void drawPixel(int x, int y, CRGB color) {
+  int i;
+  if (y % 2 == 0) {
+    i = y * 16 + x;
+  } else {
+    i = (y + 1) * 16 - (x + 1);
+  }
+  leds[i] = color;
+  FastLED.show();
+  Serial.println("def drawpixel vizivaetsa");
+}
+
+void handleRoot2() {
+  String html = "<html><head><title>RGB Matrix Control</title>";
+  html += "<script>"
+          "function setPixelColor(x, y, c) {"
+          " var xhr = new XMLHttpRequest();"
+          " xhr.open('GET', '/setPixel?x=' + x + '&y=' + y + '&red=' + c[0] + '&green=' + c[1] + '&blue=' + c[2], true);"
+          " xhr.send(null);"
+          "}"
+          "</script>";
+  html += "</head><body><h1>ESP8266 RGB LED Matrix Control</h1>";
+  html += "<table>";
+  for (int y = 0; y < 16; y++) {
+    html += "<tr>";
+    for (int x = 0; x < 16; x++) {
+      html += "<td style='padding:5px;'>";
+      html += "<input type='color' onchange='setPixelColor(";
+      html += String(x) + "," + String(y) + ",this.value.substr(1).match(/.{2}/g).map(v=>parseInt(v, 16)));' />";
+      html += "</td>";
+    }
+    html += "</tr>";
+  }
+  html += "</table>";
+  html += "<p><a href='/clear'>Clear Matrix</a></p>";
+  html += "</body></html>";
+  server.send(200, "text/html", html);
+}
+
+void handleSetPixel() {
+  int x = server.arg("x").toInt();
+  int y = server.arg("y").toInt();
+  int r = server.arg("red").toInt();
+  int g = server.arg("green").toInt();
+  int b = server.arg("blue").toInt();
+  
+  Serial.println("def handleSetPixel vizivaetsa");
+  Serial.print("x: "); Serial.println(x);
+  Serial.print("y: "); Serial.println(y);
+  Serial.print("r: "); Serial.println(r);
+  Serial.print("g: "); Serial.println(g);
+  Serial.print("b: "); Serial.println(b);
+
+  CRGB color = CRGB(r, g, b);
+  drawPixel(x, y, color);
+  FastLED.show();
+  server.send(200, "text/plain", "OK");
+}
+
+void handleClear() {
+  FastLED.clear();
+  FastLED.show();
+  server.sendHeader("Location", "/");
+  server.send(302);
+}
+
+// *****************************************
+
+
+
+
+bool isRunning = false;
+bool isRunning1 = false;
+bool isRunning2 = false;
+bool isRunning3 = false;
+bool isRunning4 = false;
+bool isRunning5 = false;
+bool isRunning6 = false;
+bool isRunning7 = false;
+bool isRunning8 = false;
+bool isRunning9 = false;
+
+
+// Обработчик страницы остановки цикла
+void fillStringdef() {
+  //text1 = server.arg("text1");
+  String text1S = server.arg("text1");
+  int mode = server.arg("mode").toInt();
+  if (!text1S.isEmpty() || mode != 0){
+    fillString(text1S, mode);
+    Serial.println("if srabotal");
+  }
+  Serial.println("vizivaetsa fillStringdef");
+}
+
+void handlefillStringPage() {
+  isRunning9 = true;
+  String page = "<html><body><form method='post' action='/stop'><br><input type='submit' value='Выйти' name='stopButton'></form>"
+    "<h1>Введите текст бегущей строки.</h1>"
+    "<form action='fillStringdef' method='post'>"
+    "<label for='text1' >Текст:</label>"
+    "<input type='text' name='text1' id='text1'><br>"
+    "<label for='mode'>Цвет</label>"
+    "<input type='mode' name='mode' id='mode'><br>"
+    "<input type='submit' value='Показать'>"
+    "</form></body></html>";
+  server.sendHeader("Content-Type", "text/html; charset=UTF-8");
+  server.send(200, "text/html", page);
+}
+
+void handlesnowRoutinePage() {
+  isRunning = true;
+  String page = "<html><body><form method='post' action='/stop'><br><input type='submit' value='Stop' name='stopButton'></form></body></html>";
+  server.send(200, "text/html", page);
+}
+
+void handlematrixRoutinePage() {
+  isRunning1 = true;
+  String page = "<html><body><form method='post' action='/stop'><br><input type='submit' value='Stop' name='stopButton'></form></body></html>";
+  server.send(200, "text/html", page);
+}
+
+void handlerainbowRoutinePage() {
+  isRunning2 = true;
+  String page = "<html><body><form method='post' action='/stop'><br><input type='submit' value='Stop' name='stopButton'></form></body></html>";
+  server.send(200, "text/html", page);
+}
+
+void handlesparklesRoutinePage() {
+  isRunning3 = true;
+  String page = "<html><body><form method='post' action='/stop'><br><input type='submit' value='Stop' name='stopButton'></form></body></html>";
+  server.send(200, "text/html", page);
+}
+
+void handlestarfallRoutinePage() {
+  isRunning4 = true;
+  String page = "<html><body><form method='post' action='/stop'><br><input type='submit' value='Stop' name='stopButton'></form></body></html>";
+  server.send(200, "text/html", page);
+}
+
+void handleballRoutinePage() {
+  isRunning5 = true;
+  String page = "<html><body><form method='post' action='/stop'><br><input type='submit' value='Stop' name='stopButton'></form></body></html>";
+  server.send(200, "text/html", page);
+}
+
+void handleballsRoutinePage() {
+  isRunning6 = true;
+  String page = "<html><body><form method='post' action='/stop'><br><input type='submit' value='Stop' name='stopButton'></form></body></html>";
+  server.send(200, "text/html", page);
+}
+
+void handlewavesRoutinePage() {
+  isRunning7 = true;
+  String page = "<html><body><form method='post' action='/stop'><br><input type='submit' value='Stop' name='stopButton'></form></body></html>";
+  server.send(200, "text/html", page);
+}
+
+void handlefireRoutinePage() {
+  isRunning8 = true;
+  String page = "<html><body><form method='post' action='/stop'><br><input type='submit' value='Stop' name='stopButton'></form></body></html>";
+  
+  server.send(200, "text/html", page);
+}
+// Обработчик запросов на остановку цикла
+void handleStop() {
+  isRunning1 = false;
+  isRunning = false;
+  isRunning2 = false;
+  isRunning3 = false;
+  isRunning4 = false;
+  isRunning5 = false;
+  isRunning6 = false;
+  isRunning7 = false;
+  isRunning8 = false;
+  isRunning9 = false;
+  FastLED.clear();
+  FastLED.show();
+  loadingFlag = true;
+  server.sendHeader("Location", "/");  // Перенаправление на главную страницу
+  server.send(303);  // Отправка ответа 303 (See Other) на полученный POST-запрос
+}
+bool autoMode = false;
+bool ledState;
+// Главная страница
+void handleRoot() {
+ledState= false;
+  String page = "<!DOCTYPE html>"
+"<html>"
+"<head>"
+    "<title>Управление освещением</title>"
+"</head>"
+"<body>"
+  "<style>"
+    /* Определяем стиль для кнопки */
+  "  .myButton {"
+  "  display: inline-block;"
+  "  font-size: 18px;"
+  "  font-weight: bold;"
+  "  padding: 10px 20px;"
+  "  text-align: center;"
+  "  text-decoration: none;"
+  "  color: #fff;"
+  "  background-color: #8ec399;"
+  "  border-radius: 5px;"
+  "  box-shadow: 2px 2px 5px rgba(0, 0, 0, 0.3);"
+  "  transition: background-color 0.3s ease-in-out, transform 0.2s ease-out;"
+  "}"
+  "    .buttonWrapper {"
+  "  position: fixed;"
+  "  top: 10px;"
+  "  right: 10px;"
+  "  z-index: 9999;"
+  "}"
+  "</style>"
+  "<div class=\"buttonWrapper\">"
+    "<button id=\"myButton\" class=\"myButton\" onclick=\"toggleLed()\">СОБСТВЕННАЯ ЯРКОСТЬ</button>"
+    "</div>"
+    
+    "<script>"
+        "function toggleLed() {"
+            "var xhttp = new XMLHttpRequest();"
+            "xhttp.open(\"GET\", \"/toggle\", true);"
+            "xhttp.send();"
+            
+            "var button = document.getElementById(\"myButton\");"
+            "if (button.innerHTML === \"СОБСТВЕННАЯ ЯРКОСТЬ\") {"
+              "button.innerHTML = \"АВТОМАТИЧЕСКАЯ ЯРКОСТЬ\";"
+              "button.style.backgroundColor = \"green\";"
+            "} else {"
+              "button.innerHTML = \"СОБСТВЕННАЯ ЯРКОСТЬ\";"
+              "button.style.backgroundColor = \"red\";"
+          "}"
+        "}"
+    "</script>"
+"</body>"
+"</html>";
+
+  /*String page =*/ page +="<html><br>"
+    "<head>"
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+      "<style>"
+        "body {"
+          "background-color: #f0ffc0;}" /* Цвет фона страницы (заменить!!!!!!!!!хуета)*/
+        
+        ".button-grid {"
+        "display: flex;"
+        "gap: 10px;"
+        "align-items: center;"
+        "flex-wrap: wrap;"
+        "row-gap: 10px;"
+        "column-gap: 10px;"
+        "}"
+        
+        ".button {"
+          "background-color: #8ec399;"
+          "border-radius: 10px;"
+          "color: white;"
+          "padding: 40px 0px;"
+          "text-align: center;"
+          "text-decoration: none;"
+          "display: flex;"
+          "justify-content: center;"
+          "align-items: center;"
+          "font-size: 22px;"
+          "margin: 0;"
+          "width: calc((100% - 20px) / 3.15);"
+          "height: 80px;"
+          "box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);"
+          "transition: all 0.2s ease-in-out;"
+          "margin-bottom: 10px;"
+          "}"
+
+        ".button:hover {"
+          "transform: scale(0.95);"
+          "box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);"
+        "}"
+
+      "</style>"
+    "</head>"
+    "<body>"
+    "<div class=\"button-grid\">"
+      "<a href='/matrixRoutine' class=\"button\">Start matrix</a><br>"
+      "<a href='/snowRoutine' class=\"button\"style=\"position: relative;\">Start Snow Routine<span class=\"snow\"></span></a><br>"
+      "<a href='/rainbowRoutine' class=\"button\">Start rainbow Routine</a><br>"
+      "<a href='/sparklesRoutine' class=\"button\">Start sparkles Routine</a><br>"
+      "<a href='/starfallRoutine' class=\"button\">Start star fall Routine</a><br>"
+      "<a href='/ballRoutine' class=\"button\">Start ball Routine</a><br>"
+      "<a href='/ballsRoutine' class=\"button\">Start balls Routine</a><br>"
+      "<a href='/wavesRoutine' class=\"button\">Start waves Routine</a><br>"
+      "<a href='/fireRoutine' class=\"button\">Start fire Routine</a><br>"
+      "<a href='/draw' class=\"button\">Start Draw</a><br>"
+      "<a href='/connecttowifi' class=\"button\">Start switch WiFi</a><br>"
+      "<a href='/fillString' class=\"button\">Start fillString</a><br>";
+  page += "</div></body></html>";
+  server.sendHeader("Content-Type", "text/html; charset=UTF-8");
+  server.send(200, "text/html", page);
+}
+int sensorValue;
+void brightnessControl() {
+  sensorValue = analogRead(A0);
+  BRIGHTNESS1 = map(sensorValue, 0, 1023, 0, 255);
+  FastLED.setBrightness(BRIGHTNESS1);
+}
+void toggleauto(){
+  ledState = !ledState;
+  server.send(200, "text/plain", String(ledState));
+}
+void setup() {
+  Serial.begin(9600);
+  WiFi.softAP(ssid, password); // запуск генерации вайфай точки доступа с указанными логином и паролем
+  Serial.print("AP IP address: "); 
+  Serial.println(WiFi.softAPIP()); // выводим IP-адрес точки доступа в монитор порта
+// Обработка запросов на веб-сервере
+  server.on("/", handleRoot); // Главная страница
+  server.on("/snowRoutine", HTTP_GET, handlesnowRoutinePage); // Страница остановки цикла
+  server.on("/matrixRoutine", HTTP_GET, handlematrixRoutinePage);
+  server.on("/rainbowRoutine", HTTP_GET, handlerainbowRoutinePage);
+  server.on("/sparklesRoutine", HTTP_GET, handlesparklesRoutinePage);
+  server.on("/starfallRoutine", HTTP_GET, handlestarfallRoutinePage);
+  server.on("/ballRoutine", HTTP_GET, handleballRoutinePage);
+  server.on("/ballsRoutine", HTTP_GET, handleballsRoutinePage);
+  server.on("/wavesRoutine", HTTP_GET, handlewavesRoutinePage);
+  server.on("/fireRoutine", HTTP_GET, handlefireRoutinePage);
+  server.on("/stop", HTTP_POST, handleStop); // Остановить работу
+  server.on("/draw", handleRoot2);
+  server.on("/setPixel", HTTP_GET,handleSetPixel);
+  server.on("/clear", HTTP_GET,handleClear);
+  server.on("/connecttowifi", handleConnect);
+  server.on("/connectwifi",HTTP_POST, connectwifi);
+  server.on("/fillString", handlefillStringPage);
+  server.on("/fillStringdef",HTTP_POST, fillStringdef);
+  server.on("/toggle", toggleauto);
+
+
+  
+  // запускаем сервер
+  server.begin();
+  
+  // настройки ленты
+  FastLED.addLeds<WS2812, LED_PIN, GRB>(leds, NUM_LEDS).setCorrection(TypicalLEDStrip);
+  FastLED.setBrightness(BRIGHTNESS);
+  if (CURRENT_LIMIT > 0) FastLED.setMaxPowerInVoltsAndMilliamps(5, CURRENT_LIMIT);
+  FastLED.clear();
+  FastLED.show();
+
+  randomSeed(analogRead(0) + analogRead(1));  // пинаем генератор случайных чисел
+}
+void loop() {
+  //customRoutine();
+  Serial.println(ledState);
+  if (isRunning) {
+    snowRoutine();
+    FastLED.show();}
+  else if (isRunning1) {
+    matrixRoutine();
+    FastLED.show();}
+  else if (isRunning2) {
+    rainbowRoutine();
+    FastLED.show();}
+  else if (isRunning3) {
+    sparklesRoutine();
+    FastLED.show();}
+  else if (isRunning4) {
+    starfallRoutine();
+    FastLED.show();}
+  else if (isRunning5) {
+    ballRoutine();
+    FastLED.show();}
+  else if (isRunning6) {
+    ballsRoutine();
+    FastLED.show();}
+  else if (isRunning7) {
+    wavesRoutine();
+    FastLED.show();}
+  else if (isRunning8) {
+    fireRoutine();
+    FastLED.show();}
+  else if (isRunning9) {
+    fillStringdef();
+    FastLED.show();}
+  FastLED.show();
+  if (ledState){
+    brightnessControl();
+    FastLED.show();
+    yield();
+  }
+  else{
+    FastLED.setBrightness(50);
+    FastLED.show();
+    yield();
+  }
+  server.handleClient();
+}
+
+
